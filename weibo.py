@@ -18,8 +18,16 @@ from lxml import etree
 from requests.adapters import HTTPAdapter
 from tqdm import tqdm
 
+import pymysql
+
+conn = pymysql.connect(host="127.0.0.1", user="root", passwd="root", db="spider")
+cursor = conn.cursor()
+
 
 class Weibo(object):
+    # 将your cookie替换成自己的cookie
+    cookie = {'Cookie': ''}
+
     def __init__(self,
                  filter=0,
                  since_date='1900-01-01',
@@ -58,12 +66,18 @@ class Weibo(object):
     def get_json(self, params):
         """获取网页中json数据"""
         url = 'https://m.weibo.cn/api/container/getIndex?'
-        r = requests.get(url, params=params)
+        r = requests.get(url, cookies=self.cookie, params=params)
         return r.json()
 
-    def get_weibo_json(self, page):
+    # def get_weibo_json(self, page):
+    #     """获取网页中微博json数据"""
+    #     params = {'containerid': '107603' + str(self.user_id), 'page': page}
+    #     js = self.get_json(params)
+    #     return js
+
+    def get_weibo_json(self, since_weibo_id):
         """获取网页中微博json数据"""
-        params = {'containerid': '107603' + str(self.user_id), 'page': page}
+        params = {'containerid': '107603' + str(self.user_id), 'since_id': since_weibo_id}
         js = self.get_json(params)
         return js
 
@@ -358,23 +372,39 @@ class Weibo(object):
             print("Error: ", e)
             traceback.print_exc()
 
-    def get_one_page(self, page):
+    def get_one_page(self, since_weibo_id, latest_weibo_id):
         """获取一页的全部微博"""
         try:
-            js = self.get_weibo_json(page)
-            if js['ok']:
+            js = self.get_weibo_json(since_weibo_id)
+            if js['ok'] == 1:
                 weibos = js['data']['cards']
                 for w in weibos:
                     if w['card_type'] == 9:
                         wb = self.get_one_weibo(w)
                         if wb:
+                            # 忽略置顶微博...
+                            isTop = w['mblog'].get('isTop')
+                            if isTop == 1:
+                                continue
+                            # if (isTop is None or isTop != 1) and (wb['created_at'] < self.since_date):
+                            #     return 0
+                            # if latest_weibo_id:
+                            if str(latest_weibo_id) == str(wb['id']):
+                                return 0
                             if wb['created_at'] < self.since_date:
-                                return True
+                                return 0
                             if (not self.filter) or (
                                     'retweet' not in wb.keys()):
                                 self.weibo.append(wb)
                                 self.got_count = self.got_count + 1
                                 self.print_weibo(wb)
+                since_id = js['data']['cardlistInfo'].get('since_id')
+                if since_id:
+                    return since_id
+                else:
+                    return 0
+            else:
+                return 0
         except Exception as e:
             print("Error: ", e)
             traceback.print_exc()
@@ -478,11 +508,47 @@ class Weibo(object):
     def write_data(self, wrote_count):
         """将爬到的信息写入文件或数据库"""
         if self.got_count > wrote_count:
-            self.write_csv(wrote_count)
+            self.write_db(wrote_count)
             if self.mongodb_write:
                 self.write_mongodb(wrote_count)
 
-    def get_pages(self):
+    def write_db(self, wrote_count):
+        """将爬到的信息写入csv文件"""
+        write_info = self.get_write_info(wrote_count)
+        for w in write_info:
+            weibo_id = w['id']
+            text = w['text']
+            pics = w['pics']
+            video_url = w['video_url']
+            created_at = w['created_at']
+            retweet_weibo_id = ''
+            is_original = w['is_original']
+            db_is_original = '0'
+            if is_original:
+                db_is_original = '1'
+            if not is_original:
+                retweet_weibo_id = w['retweet_id']
+            n = cursor.execute("SELECT DATA_ID from weibo_info where WEIBO_ID = '%s'" % (weibo_id))
+            if n == 0:
+                cursor.execute("INSERT INTO weibo_info (USER_ID, WEIBO_ID, IS_ORIGINAL, TEXT, PICS, VIDEO_URL, CREATE_TIME, RETWEET_WEIBO_ID) " \
+                     "VALUES ('%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s')" \
+                     % (self.user['id'], weibo_id, db_is_original, text, pics, video_url, created_at, retweet_weibo_id))
+
+            if not is_original:
+                retweet_weibo_id = w['retweet_id']
+                retweet_text = w['retweet_text']
+                retweet_pics = w['retweet_pics']
+                retweet_video_url = w['retweet_video_url']
+                retweet_created_at = w['retweet_created_at']
+                n = cursor.execute("SELECT DATA_ID from weibo_info where WEIBO_ID = '%s'" % (retweet_weibo_id))
+                if n == 0:
+                    sql = "INSERT INTO weibo_info (USER_ID, WEIBO_ID, IS_ORIGINAL, TEXT, PICS, VIDEO_URL, CREATE_TIME, RETWEET_WEIBO_ID) " \
+                        "VALUES ('%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s')" \
+                        % (w['retweet_user_id'], retweet_weibo_id, '1', retweet_text, retweet_pics, retweet_video_url, retweet_created_at, '')
+                    print sql
+                    cursor.execute(sql)
+
+    def get_pages(self, latest_weibo_id):
         """获取全部微博"""
         self.get_user_info()
         page_count = self.get_page_count()
@@ -490,10 +556,15 @@ class Weibo(object):
         self.print_user_info()
         page1 = 0
         random_pages = random.randint(1, 5)
-        for page in tqdm(range(1, page_count + 1), desc=u"进度"):
-            print(u'第%d页' % page)
-            is_end = self.get_one_page(page)
-            if is_end:
+
+        page = 1
+        since_weibo_id = ""
+
+        while True:
+            next_since_weibo_id = self.get_one_page(since_weibo_id, latest_weibo_id)
+            if (next_since_weibo_id is not None) and (next_since_weibo_id != 0):
+                since_weibo_id = next_since_weibo_id
+            else:
                 break
 
             if page % 20 == 0:  # 每爬20页写入一次文件
@@ -508,6 +579,12 @@ class Weibo(object):
                 page1 = page
                 random_pages = random.randint(1, 5)
 
+            page = page + 1
+
+        if len(self.weibo) > 0:
+            # 更新用户信息
+            cursor.execute("UPDATE weibo_user_info SET NICK_NAME = '%s', AVATAR_URL = '%s', LATEST_WEIBO_ID = '%s', UPDATE_TIME = now() WHERE USER_ID = '%s'"
+                           % (self.user['screen_name'], self.user['avatar_hd'], self.weibo[0]['id'], self.user['id']))
         self.write_data(wrote_count)  # 将剩余不足20页的微博写入文件
         print(u'微博爬取完成，共爬取%d条微博' % self.got_count)
 
@@ -524,49 +601,81 @@ class Weibo(object):
         self.got_count = 0
         self.user_id = user_id
 
+    def is_login(self):
+        """获取网页中json数据"""
+        url = 'https://m.weibo.cn/api/config'
+        r = requests.get(url, cookies=self.cookie)
+        json = r.json()
+        login = json['data']['login']
+        if isinstance(login, bool):
+            return login
+        else:
+            return False
+
     def start(self, user_id_list):
         """运行爬虫"""
-        try:
-            for user_id in user_id_list:
-                self.initialize_info(user_id)
-                self.get_pages()
-                print(u'信息抓取完毕')
-                print('*' * 100)
-                if self.pic_download == 1:
-                    self.download_files('img')
-                if self.video_download == 1:
-                    self.download_files('video')
-        except Exception as e:
-            print('Error: ', e)
-            traceback.print_exc()
+        # try:
+        is_login = self.is_login()
+        if is_login:
+            print(u'已登录')
+            self.printHrLine()
+        else:
+            sys.exit(u'cookie失效！')
+
+        for db_user_info in user_id_list:
+            user_id = db_user_info['user_id']
+            self.initialize_info(user_id)
+            self.get_pages(db_user_info['latest_weibo_id'])
+            print(u'信息抓取完毕')
+            print('*' * 100)
+            if self.pic_download == 1:
+                self.download_files('img')
+            if self.video_download == 1:
+                self.download_files('video')
+        # except Exception as e:
+        #     print('Error: ', e)
+        #     traceback.print_exc()
+
+    def printHrLine(self):
+        print('----------------------------')
 
 
 def main():
     try:
         # 以下是程序配置信息，可以根据自己需求修改
-        filter = 1  # 值为0表示爬取全部微博（原创微博+转发微博），值为1表示只爬取原创微博
-        since_date = '2018-01-01'  # 起始时间，即爬取发布日期从该值到现在的微博，形式为yyyy-mm-dd
+        filter = 0  # 值为0表示爬取全部微博（原创微博+转发微博），值为1表示只爬取原创微博
+        since_date = '2019-06-01'  # 起始时间，即爬取发布日期从该值到现在的微博，形式为yyyy-mm-dd
         """值为0代表不将结果写入MongoDB数据库,1代表写入；若要写入MongoDB数据库，
         请先安装MongoDB数据库和pymongo，pymongo安装方法为命令行运行:pip install pymongo"""
         mongodb_write = 0
-        pic_download = 1  # 值为0代表不下载微博原始图片,1代表下载微博原始图片
-        video_download = 1  # 值为0代表不下载微博视频,1代表下载微博视频
+        pic_download = 0  # 值为0代表不下载微博原始图片,1代表下载微博原始图片
+        video_download = 0  # 值为0代表不下载微博视频,1代表下载微博视频
 
         wb = Weibo(filter, since_date, mongodb_write, pic_download,
                    video_download)
         """user_id_list包含了要爬的目标微博id，可以是一个，也可以是多个，也可以从文件中读取
         爬单个微博，user_id_list如下所示，可以改成任意合法的用户id"""
-        user_id_list = ['1669879400']
+        user_id_list = []
         """爬多个微博，user_id_list如下所示，可以改成任意合法的用户id
         user_id_list = ['1669879400', '1729370543']
         也可以在文件中读取user_id_list，文件中可以包含很多user_id，每个user_id占一行，文件名任意，类型为txt，位置位于本程序的同目录下，
         比如文件可以叫user_id_list.txt，读取文件中的user_id_list如下所示:
         user_id_list = wb.get_user_list('user_id_list.txt')"""
 
+        n = cursor.execute("SELECT USER_ID, LATEST_WEIBO_ID, NICK_NAME from weibo_user_info WHERE FLAG = '1' ")
+        print u'共需要爬' + str(n) + u'个微博'
+        for row in cursor.fetchall():
+            db_user_info = {'user_id': row[0], 'latest_weibo_id': row[1]}
+            print row
+            user_id_list.append(db_user_info)
+        wb.printHrLine()
+
         wb.start(user_id_list)
+        conn.commit()
     except Exception as e:
         print('Error: ', e)
         traceback.print_exc()
+        conn.rollback()
 
 
 if __name__ == '__main__':
