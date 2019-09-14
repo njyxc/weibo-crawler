@@ -75,12 +75,6 @@ class Weibo(object):
         r = requests.get(url, cookies=self.cookie, params=params)
         return r.json()
 
-    # def get_weibo_json(self, page):
-    #     """获取网页中微博json数据"""
-    #     params = {'containerid': '107603' + str(self.user_id), 'page': page}
-    #     js = self.get_json(params)
-    #     return js
-
     def get_weibo_json(self, since_weibo_id):
         """获取网页中微博json数据"""
         params = {'containerid': '107603' + str(self.user_id), 'since_id': since_weibo_id}
@@ -387,7 +381,7 @@ class Weibo(object):
         else:
             return False
 
-    def get_one_page(self, since_weibo_id, latest_weibo_id):
+    def get_one_page(self, since_weibo_id, latest_weibo_time):
         """获取一页的全部微博"""
         try:
             js = self.get_weibo_json(since_weibo_id)
@@ -397,11 +391,12 @@ class Weibo(object):
                     if w['card_type'] == 9:
                         wb = self.get_one_weibo(w)
                         if wb:
-                            if str(latest_weibo_id) == str(wb['id']):
-                                if self.is_pin(w):
-                                    continue
-                                else:
-                                    return 0
+                            if latest_weibo_time is not None:
+                                if latest_weibo_time > datetime.strptime(wb['created_at'], "%Y-%m-%d"):
+                                    if self.is_pin(w):
+                                        continue
+                                    else:
+                                        return 0
                             created_at = datetime.strptime(
                                 wb['created_at'], "%Y-%m-%d")
                             since_date = datetime.strptime(
@@ -452,6 +447,8 @@ class Weibo(object):
                         wb['retweet_' + k2] = v2
                 else:
                     wb['is_original'] = True
+            else:
+                wb['is_original'] = True
             write_info.append(wb)
         return write_info
 
@@ -681,7 +678,7 @@ class Weibo(object):
                     print sql
                     cursor.execute(sql)
 
-    def get_pages(self, latest_weibo_id):
+    def get_pages(self, latest_weibo_time):
         """获取全部微博"""
         self.get_user_info()
         page_count = self.get_page_count()
@@ -694,7 +691,7 @@ class Weibo(object):
         since_weibo_id = ""
 
         while True:
-            next_since_weibo_id = self.get_one_page(since_weibo_id, latest_weibo_id)
+            next_since_weibo_id = self.get_one_page(since_weibo_id, latest_weibo_time)
             if (next_since_weibo_id is not None) and (next_since_weibo_id != 0):
                 since_weibo_id = next_since_weibo_id
             else:
@@ -716,8 +713,8 @@ class Weibo(object):
 
         if len(self.weibo) > 0:
             # 更新用户信息
-            cursor.execute("UPDATE weibo_user_info SET NICK_NAME = '%s', AVATAR_URL = '%s', LATEST_WEIBO_ID = '%s', UPDATE_TIME = now() WHERE USER_ID = '%s'"
-                           % (self.user['screen_name'], self.user['avatar_hd'], self.weibo[0]['id'], self.user['id']))
+            cursor.execute("UPDATE weibo_user_info SET NICK_NAME = '%s', AVATAR_URL = '%s', LATEST_WEIBO_ID = '%s', LATEST_WEIBO_TIME = '%s', UPDATE_TIME = now() WHERE USER_ID = '%s'"
+                           % (self.user['screen_name'], self.user['avatar_hd'], self.weibo[0]['id'], self.weibo[0]['created_at'], self.user['id']))
         self.write_data(wrote_count)  # 将剩余不足20页的微博写入文件
         print(u'微博爬取完成，共爬取%d条微博' % self.got_count)
 
@@ -758,7 +755,7 @@ class Weibo(object):
         for db_user_info in user_id_list:
             user_id = db_user_info['user_id']
             self.initialize_info(user_id)
-            self.get_pages(db_user_info['latest_weibo_id'])
+            self.get_pages(db_user_info['latest_weibo_time'])
             print(u'信息抓取完毕')
             print('*' * 100)
             if self.pic_download == 1:
@@ -784,8 +781,8 @@ def main():
         """mysql_write值为0代表不将结果写入MySQL数据库,1代表写入;若要写入MySQL数据库，
         请先安装MySQL数据库和pymysql，pymysql安装方法为命令行运行:pip install pymysql"""
         mysql_write = 0
-        pic_download = 1  # 值为0代表不下载微博原始图片,1代表下载微博原始图片
-        video_download = 1  # 值为0代表不下载微博视频,1代表下载微博视频
+        pic_download = 0  # 值为0代表不下载微博原始图片,1代表下载微博原始图片
+        video_download = 0  # 值为0代表不下载微博视频,1代表下载微博视频
 
         wb = Weibo(filter, since_date, mongodb_write, mysql_write,
                    pic_download, video_download)
@@ -813,12 +810,12 @@ def main():
         每个user_id占一行，文件名任意，类型为txt，位置位于本程序的同目录下，
         比如文件可以叫user_id_list.txt，读取文件中的user_id_list如下所示:
         user_id_list = wb.get_user_list('user_id_list.txt')"""
-        user_id_list = ['']
+        user_id_list = []
 
-        n = cursor.execute("SELECT USER_ID, LATEST_WEIBO_ID, NICK_NAME from weibo_user_info WHERE FLAG = '1' ")
+        n = cursor.execute("SELECT USER_ID, NICK_NAME, LATEST_WEIBO_ID, LATEST_WEIBO_TIME from weibo_user_info WHERE FLAG = '1' ")
         print u'共需要爬' + str(n) + u'个微博'
         for row in cursor.fetchall():
-            db_user_info = {'user_id': row[0], 'latest_weibo_id': row[1]}
+            db_user_info = {'user_id': row[0], 'latest_weibo_id': row[2], 'latest_weibo_time': row[3]}
             print row
             user_id_list.append(db_user_info)
         wb.printHrLine()
