@@ -27,6 +27,7 @@ cursor = conn.cursor()
 class Weibo(object):
     # 将your cookie替换成自己的cookie
     cookie = {'Cookie': ''}
+    ua = 'Mozilla/5.0 (iPhone; CPU iPhone OS 11_0 like Mac OS X) AppleWebKit/604.1.38 (KHTML, like Gecko) Version/11.0 Mobile/15A372 Safari/604.1'
 
     def __init__(self,
                  filter=0,
@@ -72,7 +73,7 @@ class Weibo(object):
     def get_json(self, params):
         """获取网页中json数据"""
         url = 'https://m.weibo.cn/api/container/getIndex?'
-        r = requests.get(url, cookies=self.cookie, params=params)
+        r = requests.get(url, cookies=self.cookie, params=params, headers={'User-Agent': self.ua})
         return r.json()
 
     def get_weibo_json(self, since_weibo_id):
@@ -381,8 +382,9 @@ class Weibo(object):
         else:
             return False
 
-    def get_one_page(self, since_weibo_id, latest_weibo_time):
+    def get_one_page(self, since_weibo_id, latest_weibo_time, update_time, recovery):
         """获取一页的全部微博"""
+        result = {}
         try:
             js = self.get_weibo_json(since_weibo_id)
             if js['ok'] == 1:
@@ -391,12 +393,25 @@ class Weibo(object):
                     if w['card_type'] == 9:
                         wb = self.get_one_weibo(w)
                         if wb:
-                            if latest_weibo_time is not None:
-                                if latest_weibo_time > datetime.strptime(wb['created_at'], "%Y-%m-%d"):
-                                    if self.is_pin(w):
-                                        continue
-                                    else:
-                                        return 0
+                            if not recovery:
+                                if update_time is not None:
+                                    update_time_zero = update_time.replace(hour=0, minute=0, second=0)
+                                    weibo_created_at = datetime.strptime(wb['created_at'], "%Y-%m-%d")
+                                    if update_time_zero > weibo_created_at:
+                                        if self.is_pin(w):
+                                            continue
+                                        else:
+                                            time_delta = update_time_zero - weibo_created_at
+                                            if time_delta.days != 1 or update_time.hour >= 1:
+                                                result['code'] = 0
+                                                return result
+                                if latest_weibo_time is not None:
+                                    if latest_weibo_time > datetime.strptime(wb['created_at'], "%Y-%m-%d"):
+                                        if self.is_pin(w):
+                                            continue
+                                        else:
+                                            result['code'] = 0
+                                            return result
                             created_at = datetime.strptime(
                                 wb['created_at'], "%Y-%m-%d")
                             since_date = datetime.strptime(
@@ -405,7 +420,8 @@ class Weibo(object):
                                 if self.is_pin(w):
                                     continue
                                 else:
-                                    return 0
+                                    result['code'] = 0
+                                    return result
                             if (not self.filter) or (
                                     'retweet' not in wb.keys()):
                                 self.weibo.append(wb)
@@ -413,14 +429,20 @@ class Weibo(object):
                                 self.print_weibo(wb)
                 since_id = js['data']['cardlistInfo'].get('since_id')
                 if since_id:
-                    return since_id
+                    result['code'] = 1
+                    result['data'] = since_id
+                    return result
                 else:
-                    return 0
+                    result['code'] = 0
+                    return result
             else:
-                return 0
+                result['code'] = 2
+                return result
         except Exception as e:
             print("Error: ", e)
             traceback.print_exc()
+            result['code'] = 2
+            return result
 
     def get_page_count(self):
         """获取微博页数"""
@@ -678,7 +700,7 @@ class Weibo(object):
                     print sql
                     cursor.execute(sql)
 
-    def get_pages(self, latest_weibo_time):
+    def get_pages(self, db_user_info):
         """获取全部微博"""
         self.get_user_info()
         page_count = self.get_page_count()
@@ -690,11 +712,34 @@ class Weibo(object):
         page = 1
         since_weibo_id = ""
 
+        latest_weibo_time = db_user_info['latest_weibo_time']
+        update_time = db_user_info['update_time']
+
+        start_time = datetime.now()
+
+        error_since_weibo_id = 'null'
+
+        db_error_since_weibo_id = db_user_info['error_since_weibo_id']
+
+        recovery = False
+
+        if db_error_since_weibo_id:
+            since_weibo_id = db_error_since_weibo_id
+            recovery = True
+
         while True:
-            next_since_weibo_id = self.get_one_page(since_weibo_id, latest_weibo_time)
-            if (next_since_weibo_id is not None) and (next_since_weibo_id != 0):
-                since_weibo_id = next_since_weibo_id
-            else:
+            result = self.get_one_page(since_weibo_id, latest_weibo_time, update_time, recovery)
+            result_code = result['code']
+            if result_code == 1:
+                next_since_weibo_id = result['data']
+                if (next_since_weibo_id is not None) and (next_since_weibo_id != 0):
+                    since_weibo_id = next_since_weibo_id
+                else:
+                    break
+            elif result_code == 0:
+                break
+            elif result_code == 2:
+                error_since_weibo_id = since_weibo_id
                 break
 
             if page % 20 == 0:  # 每爬20页写入一次文件
@@ -713,8 +758,8 @@ class Weibo(object):
 
         if len(self.weibo) > 0:
             # 更新用户信息
-            cursor.execute("UPDATE weibo_user_info SET NICK_NAME = '%s', AVATAR_URL = '%s', LATEST_WEIBO_ID = '%s', LATEST_WEIBO_TIME = '%s', UPDATE_TIME = now() WHERE USER_ID = '%s'"
-                           % (self.user['screen_name'], self.user['avatar_hd'], self.weibo[0]['id'], self.weibo[0]['created_at'], self.user['id']))
+            cursor.execute("UPDATE weibo_user_info SET NICK_NAME = '%s', AVATAR_URL = '%s', LATEST_WEIBO_ID = '%s', LATEST_WEIBO_TIME = '%s', ERROR_SINCE_WEIBO_ID = %s, UPDATE_TIME = '%s' WHERE USER_ID = '%s'"
+                           % (self.user['screen_name'], self.user['avatar_hd'], self.weibo[0]['id'], self.weibo[0]['created_at'], error_since_weibo_id, start_time, self.user['id']))
         self.write_data(wrote_count)  # 将剩余不足20页的微博写入文件
         print(u'微博爬取完成，共爬取%d条微博' % self.got_count)
 
@@ -755,7 +800,7 @@ class Weibo(object):
         for db_user_info in user_id_list:
             user_id = db_user_info['user_id']
             self.initialize_info(user_id)
-            self.get_pages(db_user_info['latest_weibo_time'])
+            self.get_pages(db_user_info)
             print(u'信息抓取完毕')
             print('*' * 100)
             if self.pic_download == 1:
@@ -774,7 +819,7 @@ def main():
     try:
         # 以下是程序配置信息，可以根据自己需求修改
         filter = 1  # 值为0表示爬取全部微博（原创微博+转发微博），值为1表示只爬取原创微博
-        since_date = '2018-01-01'  # 起始时间，即爬取发布日期从该值到现在的微博，形式为yyyy-mm-dd
+        since_date = '2010-01-01'  # 起始时间，即爬取发布日期从该值到现在的微博，形式为yyyy-mm-dd
         """mongodb_write值为0代表不将结果写入MongoDB数据库,1代表写入；若要写入MongoDB数据库，
         请先安装MongoDB数据库和pymongo，pymongo安装方法为命令行运行:pip install pymongo"""
         mongodb_write = 0
@@ -812,10 +857,10 @@ def main():
         user_id_list = wb.get_user_list('user_id_list.txt')"""
         user_id_list = []
 
-        n = cursor.execute("SELECT USER_ID, NICK_NAME, LATEST_WEIBO_ID, LATEST_WEIBO_TIME from weibo_user_info WHERE FLAG = '1' ")
+        n = cursor.execute("SELECT USER_ID, NICK_NAME, LATEST_WEIBO_ID, LATEST_WEIBO_TIME, ERROR_SINCE_WEIBO_ID, UPDATE_TIME from weibo_user_info WHERE FLAG = '1' ")
         print u'共需要爬' + str(n) + u'个微博'
         for row in cursor.fetchall():
-            db_user_info = {'user_id': row[0], 'latest_weibo_id': row[2], 'latest_weibo_time': row[3]}
+            db_user_info = {'user_id': row[0], 'latest_weibo_id': row[2], 'latest_weibo_time': row[3], 'error_since_weibo_id': row[4], 'update_time': row[5]}
             print row
             user_id_list.append(db_user_info)
         wb.printHrLine()
