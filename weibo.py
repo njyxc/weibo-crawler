@@ -19,15 +19,29 @@ from requests.adapters import HTTPAdapter
 from tqdm import tqdm
 
 import pymysql
+import ConfigParser
 
-conn = pymysql.connect(host="127.0.0.1", user="root", passwd="root", db="spider")
+# 读取配置文件
+config_raw = ConfigParser.RawConfigParser()
+config_raw.read('./weibo-crawler.conf')
+
+# 读取数据库配置
+dbinfo_host = config_raw.get('database', 'host')
+dbinfo_user = config_raw.get('database', 'user')
+dbinfo_password = config_raw.get('database', 'password')
+dbinfo_db = config_raw.get('database', 'db')
+
+# 读取请求配置
+cookie_str = config_raw.get('request', 'cookie')
+user_agent = config_raw.get('request', 'user_agent')
+
+conn = pymysql.connect(host=dbinfo_host, user=dbinfo_user, passwd=dbinfo_password, db=dbinfo_db)
 cursor = conn.cursor()
 
 
 class Weibo(object):
     # 将your cookie替换成自己的cookie
-    cookie = {'Cookie': ''}
-    ua = 'Mozilla/5.0 (iPhone; CPU iPhone OS 11_0 like Mac OS X) AppleWebKit/604.1.38 (KHTML, like Gecko) Version/11.0 Mobile/15A372 Safari/604.1'
+    cookie = {'Cookie': cookie_str}
 
     def __init__(self,
                  filter=0,
@@ -73,7 +87,7 @@ class Weibo(object):
     def get_json(self, params):
         """获取网页中json数据"""
         url = 'https://m.weibo.cn/api/container/getIndex?'
-        r = requests.get(url, cookies=self.cookie, params=params, headers={'User-Agent': self.ua})
+        r = requests.get(url, cookies=self.cookie, params=params, headers={'User-Agent': user_agent})
         return r.json()
 
     def get_weibo_json(self, since_weibo_id):
@@ -343,7 +357,9 @@ class Weibo(object):
             is_long = weibo_info['isLongText']
             if retweeted_status:  # 转发
                 retweet_id = retweeted_status['id']
-                is_long_retweet = retweeted_status['isLongText']
+                is_long_retweet = retweeted_status.get('isLongText')
+                if is_long_retweet is None:
+                    is_long_retweet = False
                 if is_long:
                     weibo = self.get_long_weibo(weibo_id)
                     if not weibo:
