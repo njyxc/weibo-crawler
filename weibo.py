@@ -700,8 +700,8 @@ class Weibo(object):
                 retweet_weibo_id = w['retweet_id']
             n = cursor.execute("SELECT DATA_ID from weibo_info where WEIBO_ID = '%s'" % (weibo_id))
             if n == 0:
-                cursor.execute("INSERT INTO weibo_info (USER_ID, WEIBO_ID, IS_ORIGINAL, TEXT, PICS, VIDEO_URL, CREATE_TIME, RETWEET_WEIBO_ID) " \
-                     "VALUES ('%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s')" \
+                cursor.execute("INSERT INTO weibo_info (USER_ID, WEIBO_ID, IS_ORIGINAL, TEXT, PICS, VIDEO_URL, CREATE_TIME, RETWEET_WEIBO_ID, INSERT_TIME) " \
+                     "VALUES ('%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', now())" \
                      % (self.user['id'], weibo_id, db_is_original, text, pics, video_url, created_at, retweet_weibo_id))
 
             if not is_original:
@@ -712,10 +712,10 @@ class Weibo(object):
                 retweet_created_at = w['retweet_created_at']
                 n = cursor.execute("SELECT DATA_ID from weibo_info where WEIBO_ID = '%s'" % (retweet_weibo_id))
                 if n == 0:
-                    sql = "INSERT INTO weibo_info (USER_ID, WEIBO_ID, IS_ORIGINAL, TEXT, PICS, VIDEO_URL, CREATE_TIME, RETWEET_WEIBO_ID) " \
-                        "VALUES ('%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s')" \
+                    sql = "INSERT INTO weibo_info (USER_ID, WEIBO_ID, IS_ORIGINAL, TEXT, PICS, VIDEO_URL, CREATE_TIME, RETWEET_WEIBO_ID, INSERT_TIME) " \
+                        "VALUES ('%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', now())" \
                         % (w['retweet_user_id'], retweet_weibo_id, '1', retweet_text, retweet_pics, retweet_video_url, retweet_created_at, '')
-                    print sql
+                    # print sql
                     cursor.execute(sql)
 
     def get_pages(self, db_user_info):
@@ -827,6 +827,7 @@ class Weibo(object):
                 self.download_files('img')
             if self.video_download == 1:
                 self.download_files('video')
+            sleep(2)
         # except Exception as e:
         #     print('Error: ', e)
         #     traceback.print_exc()
