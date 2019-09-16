@@ -243,6 +243,8 @@ class Weibo(object):
 
     def string_to_int(self, string):
         """字符串转换为整数"""
+        if not string:
+            return 0
         if isinstance(string, int):
             return string
         elif string.endswith(u'万+'):
@@ -298,11 +300,11 @@ class Weibo(object):
         weibo['created_at'] = weibo_info['created_at']
         weibo['source'] = weibo_info['source']
         weibo['attitudes_count'] = self.string_to_int(
-            weibo_info['attitudes_count'])
+            weibo_info.get('attitudes_count'))
         weibo['comments_count'] = self.string_to_int(
-            weibo_info['comments_count'])
+            weibo_info.get('comments_count'))
         weibo['reposts_count'] = self.string_to_int(
-            weibo_info['reposts_count'])
+            weibo_info.get('reposts_count'))
         weibo['topics'] = self.get_topics(selector)
         weibo['at_users'] = self.get_at_users(selector)
         return self.standardize_info(weibo)
@@ -743,34 +745,36 @@ class Weibo(object):
             since_weibo_id = db_error_since_weibo_id
             recovery = True
 
-        while True:
-            result = self.get_one_page(since_weibo_id, latest_weibo_time, update_time, recovery)
-            result_code = result['code']
-            if result_code == 1:
-                next_since_weibo_id = result['data']
-                if (next_since_weibo_id is not None) and (next_since_weibo_id != 0):
-                    since_weibo_id = next_since_weibo_id
-                else:
+        with tqdm(total=page_count) as progress_bar:
+            while True:
+                result = self.get_one_page(since_weibo_id, latest_weibo_time, update_time, recovery)
+                result_code = result['code']
+                if result_code == 1:
+                    next_since_weibo_id = result['data']
+                    if (next_since_weibo_id is not None) and (next_since_weibo_id != 0):
+                        since_weibo_id = next_since_weibo_id
+                    else:
+                        break
+                elif result_code == 0:
                     break
-            elif result_code == 0:
-                break
-            elif result_code == 2:
-                error_since_weibo_id = since_weibo_id
-                break
+                elif result_code == 2:
+                    error_since_weibo_id = since_weibo_id
+                    break
 
-            if page % 20 == 0:  # 每爬20页写入一次文件
-                self.write_data(wrote_count)
-                wrote_count = self.got_count
+                if page % 20 == 0:  # 每爬20页写入一次文件
+                    self.write_data(wrote_count)
+                    wrote_count = self.got_count
 
-            # 通过加入随机等待避免被限制。爬虫速度过快容易被系统限制(一段时间后限
-            # 制会自动解除)，加入随机等待模拟人的操作，可降低被系统限制的风险。默
-            # 认是每爬取1到5页随机等待6到10秒，如果仍然被限，可适当增加sleep时间
-            if page - page1 == random_pages and page < page_count:
-                sleep(random.randint(6, 10))
-                page1 = page
-                random_pages = random.randint(1, 5)
+                # 通过加入随机等待避免被限制。爬虫速度过快容易被系统限制(一段时间后限
+                # 制会自动解除)，加入随机等待模拟人的操作，可降低被系统限制的风险。默
+                # 认是每爬取1到5页随机等待6到10秒，如果仍然被限，可适当增加sleep时间
+                if page - page1 == random_pages and page < page_count:
+                    sleep(random.randint(8, 15))
+                    page1 = page
+                    random_pages = random.randint(1, 5)
 
-            page = page + 1
+                progress_bar.update(page)
+                page = page + 1
 
         if len(self.weibo) > 0:
             # 更新用户信息
