@@ -21,20 +21,19 @@ from tqdm import tqdm
 import pymysql
 import ConfigParser
 
-# 读取配置文件
+"""读取配置文件"""
 config_raw = ConfigParser.RawConfigParser()
 config_raw.read('./weibo-crawler.conf')
-
 # 读取数据库配置
 dbinfo_host = config_raw.get('database', 'host')
 dbinfo_user = config_raw.get('database', 'user')
 dbinfo_password = config_raw.get('database', 'password')
 dbinfo_db = config_raw.get('database', 'db')
-
 # 读取请求配置
 cookie_str = config_raw.get('request', 'cookie')
 user_agent = config_raw.get('request', 'user_agent')
 
+"""建立数据库连接"""
 conn = pymysql.connect(host=dbinfo_host, user=dbinfo_user, passwd=dbinfo_password, db=dbinfo_db)
 cursor = conn.cursor()
 
@@ -400,7 +399,7 @@ class Weibo(object):
         else:
             return False
 
-    def get_one_page(self, since_weibo_id, latest_weibo_time, update_time, recovery):
+    def get_one_page(self, since_weibo_id, db_latest_weibo_time, db_update_time, recovery):
         """获取一页的全部微博"""
         result = {}
         try:
@@ -412,19 +411,21 @@ class Weibo(object):
                         wb = self.get_one_weibo(w)
                         if wb:
                             if not recovery:
-                                if update_time is not None:
-                                    update_time_zero = update_time.replace(hour=0, minute=0, second=0)
+                                """ 最后一次爬取时间，在最新一条微博发布时间之后，则不存在新微博，结束爬取 """
+                                if db_update_time is not None:
+                                    update_time_zero = db_update_time.replace(hour=0, minute=0, second=0)
                                     weibo_created_at = datetime.strptime(wb['created_at'], "%Y-%m-%d")
                                     if update_time_zero > weibo_created_at:
                                         if self.is_pin(w):
                                             continue
                                         else:
                                             time_delta = update_time_zero - weibo_created_at
-                                            if time_delta.days != 1 or update_time.hour >= 1:
+                                            if time_delta.days != 1 or db_update_time.hour >= 1:
                                                 result['code'] = 0
                                                 return result
-                                if latest_weibo_time is not None:
-                                    if latest_weibo_time > datetime.strptime(wb['created_at'], "%Y-%m-%d"):
+                                """ 数据库里的最后一条微博时间，在最新一条微博发布时间之后，则不存在新微博，结束爬取 """
+                                if db_latest_weibo_time is not None:
+                                    if db_latest_weibo_time > datetime.strptime(wb['created_at'], "%Y-%m-%d"):
                                         if self.is_pin(w):
                                             continue
                                         else:
@@ -727,36 +728,43 @@ class Weibo(object):
         page1 = 0
         random_pages = random.randint(1, 5)
 
-        page = 1
-        since_weibo_id = ""
-
-        latest_weibo_time = db_user_info['latest_weibo_time']
-        update_time = db_user_info['update_time']
-
-        start_time = datetime.now()
-
-        error_since_weibo_id = 'null'
-
+        # 数据库中的最新一条微博时间
+        db_latest_weibo_time = db_user_info['latest_weibo_time']
+        # 数据库中的最后爬取时间
+        db_update_time = db_user_info['update_time']
+        # 数据库中记录的发生错误的起始微博ID
         db_error_since_weibo_id = db_user_info['error_since_weibo_id']
 
+        # 起始微博ID
+        since_weibo_id = ""
+        # 出错的起始微博ID
+        error_since_weibo_id = 'null'
+        # 是否是恢复错误爬取
         recovery = False
 
         if db_error_since_weibo_id:
             since_weibo_id = db_error_since_weibo_id
             recovery = True
 
+        # 页码
+        page = 1
+        # 本次开始时间
+        start_time = datetime.now()
         with tqdm(total=page_count) as progress_bar:
             while True:
-                result = self.get_one_page(since_weibo_id, latest_weibo_time, update_time, recovery)
+                result = self.get_one_page(since_weibo_id, db_latest_weibo_time, db_update_time, recovery)
                 result_code = result['code']
+                # 还有下一页微博需要爬
                 if result_code == 1:
                     next_since_weibo_id = result['data']
                     if (next_since_weibo_id is not None) and (next_since_weibo_id != 0):
                         since_weibo_id = next_since_weibo_id
                     else:
                         break
+                # 没有微博需要爬
                 elif result_code == 0:
                     break
+                # 爬取微博出错，记录错误位置，下次爬取时，从该位置重试
                 elif result_code == 2:
                     error_since_weibo_id = since_weibo_id
                     break
