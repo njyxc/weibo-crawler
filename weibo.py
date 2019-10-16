@@ -106,6 +106,8 @@ class Weibo(object):
             user_info = self.standardize_info(info)
             self.user = user_info
             return user_info
+        else:
+            return None
 
     def get_long_weibo(self, id):
         """获取长微博"""
@@ -721,7 +723,14 @@ class Weibo(object):
 
     def get_pages(self, db_user_info):
         """获取全部微博"""
-        self.get_user_info()
+        user_info = self.get_user_info()
+        # 若查询微博用户信息失败，在库中标记用户状态
+        if not user_info:
+            print '用户'+self.user_id+'状态异常！'
+            cursor.execute(
+                "UPDATE weibo_user_info SET BAN = '1' WHERE USER_ID = '%s'"
+                % self.user_id)
+            return
         page_count = self.get_page_count()
         wrote_count = 0
         self.print_user_info()
@@ -835,7 +844,7 @@ class Weibo(object):
                 self.download_files('img')
             if self.video_download == 1:
                 self.download_files('video')
-            sleep(2)
+            sleep(10)
         # except Exception as e:
         #     print('Error: ', e)
         #     traceback.print_exc()
@@ -886,7 +895,16 @@ def main():
         user_id_list = wb.get_user_list('user_id_list.txt')"""
         user_id_list = []
 
-        n = cursor.execute("SELECT USER_ID, NICK_NAME, LATEST_WEIBO_ID, LATEST_WEIBO_TIME, ERROR_SINCE_WEIBO_ID, UPDATE_TIME from weibo_user_info WHERE FLAG = '1' ")
+        n = cursor.execute(
+            "SELECT USER_ID, NICK_NAME, LATEST_WEIBO_ID, LATEST_WEIBO_TIME, ERROR_SINCE_WEIBO_ID, UPDATE_TIME from weibo_user_info WHERE FLAG = '1' AND `STATUS` = '1' AND BAN = '1'")
+        if n:
+            print '有如下微博状态异常'
+            for row in cursor.fetchall():
+                print 'id:' + row[0] + ', name:' + row[1]
+            conn.close()
+            return
+
+        n = cursor.execute("SELECT USER_ID, NICK_NAME, LATEST_WEIBO_ID, LATEST_WEIBO_TIME, ERROR_SINCE_WEIBO_ID, UPDATE_TIME from weibo_user_info WHERE FLAG = '1' AND `STATUS` = '1'")
         print u'共需要爬' + str(n) + u'个微博'
         for row in cursor.fetchall():
             db_user_info = {'user_id': row[0], 'latest_weibo_id': row[2], 'latest_weibo_time': row[3], 'error_since_weibo_id': row[4], 'update_time': row[5]}
@@ -896,10 +914,12 @@ def main():
 
         wb.start(user_id_list)
         conn.commit()
+        conn.close()
     except Exception as e:
         print('Error: ', e)
         traceback.print_exc()
         conn.rollback()
+        conn.close()
 
 
 if __name__ == '__main__':
