@@ -703,9 +703,9 @@ class Weibo(object):
                 retweet_weibo_id = w['retweet_id']
             n = cursor.execute("SELECT DATA_ID from weibo_info where WEIBO_ID = '%s'" % (weibo_id))
             if n == 0:
-                cursor.execute("INSERT INTO weibo_info (USER_ID, WEIBO_ID, IS_ORIGINAL, TEXT, PICS, VIDEO_URL, CREATE_TIME, RETWEET_WEIBO_ID, INSERT_TIME) " \
-                     "VALUES ('%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', now())" \
-                     % (self.user['id'], weibo_id, db_is_original, text, pics, video_url, created_at, retweet_weibo_id))
+                sql = "INSERT INTO weibo_info (USER_ID, WEIBO_ID, IS_ORIGINAL, TEXT, PICS, VIDEO_URL, CREATE_TIME, RETWEET_WEIBO_ID, INSERT_TIME) " \
+                      "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())"
+                cursor.execute(sql, (self.user['id'], weibo_id, db_is_original, text, pics, video_url, created_at, retweet_weibo_id))
 
             if not is_original:
                 retweet_weibo_id = w['retweet_id']
