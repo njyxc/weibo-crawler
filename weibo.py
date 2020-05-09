@@ -358,6 +358,11 @@ class Weibo(object):
             weibo_id = weibo_info['id']
             retweeted_status = weibo_info.get('retweeted_status')
             is_long = weibo_info['isLongText']
+            pic_num = weibo_info['pic_num']
+            # 如果包含图片超过9张，也按照长微博处理，获取超过9张的图片链接
+            if pic_num:
+                if pic_num > 9:
+                    is_long = True
             if retweeted_status:  # 转发
                 retweet_id = retweeted_status['id']
                 is_long_retweet = retweeted_status.get('isLongText')
@@ -412,7 +417,13 @@ class Weibo(object):
                     if w['card_type'] == 9:
                         wb = self.get_one_weibo(w)
                         if wb:
-                            if not recovery:
+                            if recovery:
+                                """ 如果是恢复爬取模式，爬到库里有的微博位置 """
+                                n = cursor.execute("SELECT DATA_ID from weibo_info where WEIBO_ID = '%s'" % (wb['id']))
+                                if n > 0:
+                                    result['code'] = 0
+                                    return result
+                            else:
                                 """ 最后一次爬取时间，在最新一条微博发布时间之后，则不存在新微博，结束爬取 """
                                 if db_update_time is not None:
                                     update_time_zero = db_update_time.replace(hour=0, minute=0, second=0)
