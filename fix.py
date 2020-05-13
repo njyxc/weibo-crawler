@@ -21,20 +21,22 @@ dbinfo_user = config_raw.get('database', 'user')
 dbinfo_password = config_raw.get('database', 'password')
 dbinfo_db = config_raw.get('database', 'db')
 
-"""建立数据库连接"""
-conn = pymysql.connect(host=dbinfo_host, user=dbinfo_user, passwd=dbinfo_password, db=dbinfo_db)
-cursor = conn.cursor()
 
 """ 修复超过9张图片的微博 """
 def fix_images_over_nine():
     try:
         wb = Weibo(1, '2010-01-01', 0, 0, 0, 0)
 
-        count = 1
-        tmp_count = 0
-        random_pages = random.randint(1, 5)
+        weibo_update_list = []
 
-        n = cursor.execute("SELECT WEIBO_ID FROM weibo_info WHERE LENGTH(PICS) - LENGTH( REPLACE(PICS,',','') ) = 8 AND CREATE_TIME >= '2019-09-01 00:00:00' AND CREATE_TIME < '2019-10-01 00:00:00' ORDER BY WEIBO_ID")
+        # count = 1
+        # tmp_count = 0
+        # random_pages = random.randint(1, 5)
+        """建立数据库连接"""
+        conn = pymysql.connect(host=dbinfo_host, user=dbinfo_user, passwd=dbinfo_password, db=dbinfo_db)
+        cursor = conn.cursor()
+        n = cursor.execute("SELECT WEIBO_ID FROM weibo_info w JOIN weibo_user_info u ON w.USER_ID = u.USER_ID WHERE LENGTH(PICS) - LENGTH(REPLACE(PICS, ',', '')) = 8 AND w.CREATE_TIME >= '2019-10-01 00:00:00' AND w.CREATE_TIME < '2019-12-01 00:00:00' AND u.FLAG = '1'  AND u.STATUS = '1' AND u.BAN <> '1' ORDER BY WEIBO_ID")
+        conn.close()
         if n:
             # for row in cursor.fetchall():
             for row in tqdm(cursor.fetchall(), desc='progress'):
@@ -49,20 +51,29 @@ def fix_images_over_nine():
                             pics_arr = pics.split(",")
                             if pics_arr.__len__() > 9:
                                 print "ok"
-                                cursor.execute("UPDATE weibo_info SET PICS = %s WHERE WEIBO_ID = %s",
-                                               (pics, weibo_id))
-                if count - tmp_count == random_pages and count < n:
-                    sleep(random.randint(1, 3))
-                    tmp_count = count
-                    random_pages = random.randint(7, 20)
-                count = count + 1
+                                weibo_update = {'weibo_id': row[0], 'pics': pics}
+                                weibo_update_list.append(weibo_update)
+                sleep(random.randint(1, 5))
+                # if count - tmp_count == random_pages and count < n:
+                #     sleep(random.randint(1, 3))
+                #     tmp_count = count
+                #     random_pages = random.randint(7, 20)
+                # count = count + 1
+
+        print "需要更新微博数：", len(weibo_update_list)
+        conn = pymysql.connect(host=dbinfo_host, user=dbinfo_user, passwd=dbinfo_password, db=dbinfo_db)
+        cursor = conn.cursor()
+        for weibo_update in weibo_update_list:
+            weibo_id = weibo_update['weibo_id']
+            pics = weibo_update['pics']
+            cursor.execute("UPDATE weibo_info SET PICS = %s WHERE WEIBO_ID = %s", (pics, weibo_id))
         conn.commit()
         conn.close()
     except Exception as e:
         print('Error: ', e)
         traceback.print_exc()
-        conn.rollback()
-        conn.close()
+        # conn.rollback()
+        # conn.close()
 
 
 if __name__ == '__main__':
