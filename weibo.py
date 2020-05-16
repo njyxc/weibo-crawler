@@ -12,6 +12,7 @@ import traceback
 from collections import OrderedDict
 from datetime import datetime, timedelta
 from time import sleep
+import time
 
 import requests
 from lxml import etree
@@ -33,9 +34,9 @@ dbinfo_db = config_raw.get('database', 'db')
 cookie_str = config_raw.get('request', 'cookie')
 user_agent = config_raw.get('request', 'user_agent')
 
-"""建立数据库连接"""
-conn = pymysql.connect(host=dbinfo_host, user=dbinfo_user, passwd=dbinfo_password, db=dbinfo_db)
-cursor = conn.cursor()
+# """建立数据库连接"""
+# conn = pymysql.connect(host=dbinfo_host, user=dbinfo_user, passwd=dbinfo_password, db=dbinfo_db)
+# cursor = conn.cursor()
 
 
 class Weibo(object):
@@ -74,6 +75,7 @@ class Weibo(object):
         self.got_count = 0  # 爬取到的微博数
         self.mysql_config = {
         }  # MySQL数据库连接配置，可以不填，当使用者的mysql用户名、密码等与本程序默认值不同时，需要通过mysql_config来自定义
+        self.get_long_weibo_time = time.time() # 长微博频繁访问会被限制，记录最后一次访问时间，两次请求间隔过短，适当sleep
 
     def is_date(self, since_date):
         """判断日期格式是否正确"""
@@ -85,6 +87,7 @@ class Weibo(object):
 
     def get_json(self, params):
         """获取网页中json数据"""
+        print "get_json params:" + str(params)
         url = 'https://m.weibo.cn/api/container/getIndex?'
         r = requests.get(url, cookies=self.cookie, params=params, headers={'User-Agent': user_agent})
         return r.json()
@@ -110,6 +113,9 @@ class Weibo(object):
             return None
 
     def get_long_weibo(self, id):
+        if (time.time() - self.get_long_weibo_time) < 5:
+            sleep(random.randint(1, 5))
+        self.get_long_weibo_time = time.time()
         """获取长微博"""
         url = 'https://m.weibo.cn/detail/%s' % id
         html = requests.get(url).text
@@ -418,9 +424,9 @@ class Weibo(object):
                         wb = self.get_one_weibo(w)
                         if wb:
                             if recovery:
-                                """ 如果是恢复爬取模式，爬到库里有的微博位置 """
-                                n = cursor.execute("SELECT DATA_ID from weibo_info where WEIBO_ID = '%s'" % (wb['id']))
-                                if n > 0:
+                                """ 如果是恢复爬取模式，爬到库里有的微博为止 """
+                                all = self.mysql_select("SELECT DATA_ID from weibo_info where WEIBO_ID = '%s'" % (wb['id']))
+                                if all.__len__() > 0:
                                     result['code'] = 0
                                     return result
                             else:
@@ -690,47 +696,96 @@ class Weibo(object):
     def write_data(self, wrote_count):
         """将爬到的信息写入文件或数据库"""
         if self.got_count > wrote_count:
-            self.write_db(wrote_count)
+            # self.write_db(wrote_count)
             if self.mysql_write:
                 self.write_mysql(wrote_count)
             if self.mongodb_write:
                 self.write_mongodb(wrote_count)
 
-    def write_db(self, wrote_count):
-        """将爬到的信息写入csv文件"""
-        write_info = self.get_write_info(wrote_count)
-        for w in write_info:
-            weibo_id = w['id']
-            text = w['text']
-            pics = w['pics']
-            video_url = w['video_url']
-            created_at = w['created_at']
-            retweet_weibo_id = ''
-            is_original = w['is_original']
-            db_is_original = '0'
-            if is_original:
-                db_is_original = '1'
-            if not is_original:
-                retweet_weibo_id = w['retweet_id']
-            n = cursor.execute("SELECT DATA_ID from weibo_info where WEIBO_ID = '%s'" % (weibo_id))
-            if n == 0:
-                sql = "INSERT INTO weibo_info (USER_ID, WEIBO_ID, IS_ORIGINAL, TEXT, PICS, VIDEO_URL, CREATE_TIME, RETWEET_WEIBO_ID, INSERT_TIME) " \
-                      "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())"
-                cursor.execute(sql, (self.user['id'], weibo_id, db_is_original, text, pics, video_url, created_at, retweet_weibo_id))
+    def mysql_select(self, sql):
+        """查询MySQL数据"""
+        connection = pymysql.connect(host=dbinfo_host, user=dbinfo_user, passwd=dbinfo_password, db=dbinfo_db)
+        cursor = connection.cursor()
 
-            if not is_original:
-                retweet_weibo_id = w['retweet_id']
-                retweet_text = w['retweet_text']
-                retweet_pics = w['retweet_pics']
-                retweet_video_url = w['retweet_video_url']
-                retweet_created_at = w['retweet_created_at']
-                n = cursor.execute("SELECT DATA_ID from weibo_info where WEIBO_ID = '%s'" % (retweet_weibo_id))
+        try:
+            cursor.execute(sql)
+            return cursor.fetchall();
+        except Exception as e:
+            print('Error: ', e)
+            traceback.print_exc()
+        finally:
+            connection.close()
+
+    def mysql_insert_sql(self, sql, args=None):
+        """向MySQL表插入或更新数据"""
+        connection = pymysql.connect(host=dbinfo_host, user=dbinfo_user, passwd=dbinfo_password, db=dbinfo_db)
+        cursor = connection.cursor()
+
+        try:
+            cursor.execute(sql, args)
+            connection.commit()
+        except Exception as e:
+            connection.rollback()
+            # print('Error: ', e)
+            # traceback.print_exc()
+            raise e
+        finally:
+            connection.close()
+
+    def write_db(self, error_since_weibo_id, start_time):
+        """将爬到的信息写入csv文件"""
+        connection = pymysql.connect(host=dbinfo_host, user=dbinfo_user, passwd=dbinfo_password, db=dbinfo_db)
+        cursor = connection.cursor()
+        try:
+            write_info = self.get_write_info(0)
+            for w in tqdm(write_info, desc='insert progress'):
+                weibo_id = w['id']
+                text = w['text']
+                pics = w['pics']
+                video_url = w['video_url']
+                created_at = w['created_at']
+                retweet_weibo_id = ''
+                is_original = w['is_original']
+                db_is_original = '0'
+                if is_original:
+                    db_is_original = '1'
+                if not is_original:
+                    retweet_weibo_id = w['retweet_id']
+                n = cursor.execute("SELECT DATA_ID from weibo_info where WEIBO_ID = '%s'" % (weibo_id))
                 if n == 0:
                     sql = "INSERT INTO weibo_info (USER_ID, WEIBO_ID, IS_ORIGINAL, TEXT, PICS, VIDEO_URL, CREATE_TIME, RETWEET_WEIBO_ID, INSERT_TIME) " \
-                        "VALUES ('%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', now())" \
-                        % (w['retweet_user_id'], retweet_weibo_id, '1', retweet_text, retweet_pics, retweet_video_url, retweet_created_at, '')
-                    # print sql
-                    cursor.execute(sql)
+                          "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())"
+                    cursor.execute(sql, (self.user['id'], weibo_id, db_is_original, text, pics, video_url, created_at, retweet_weibo_id))
+
+                if not is_original:
+                    retweet_weibo_id = w['retweet_id']
+                    retweet_text = w['retweet_text']
+                    retweet_pics = w['retweet_pics']
+                    retweet_video_url = w['retweet_video_url']
+                    retweet_created_at = w['retweet_created_at']
+                    n = cursor.execute("SELECT DATA_ID from weibo_info where WEIBO_ID = '%s'" % (retweet_weibo_id))
+                    if n == 0:
+                        sql = "INSERT INTO weibo_info (USER_ID, WEIBO_ID, IS_ORIGINAL, TEXT, PICS, VIDEO_URL, CREATE_TIME, RETWEET_WEIBO_ID, INSERT_TIME) " \
+                            "VALUES ('%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', now())" \
+                            % (w['retweet_user_id'], retweet_weibo_id, '1', retweet_text, retweet_pics, retweet_video_url, retweet_created_at, '')
+                        # print sql
+                        cursor.execute(sql)
+            if len(self.weibo) > 0:
+                # 更新用户信息
+                cursor.execute("UPDATE weibo_user_info SET NICK_NAME = '%s', AVATAR_URL = '%s', LATEST_WEIBO_ID = '%s', LATEST_WEIBO_TIME = '%s', ERROR_SINCE_WEIBO_ID = %s, UPDATE_TIME = '%s' WHERE USER_ID = '%s'"
+                               % (self.user['screen_name'], self.user['avatar_hd'], self.weibo[0]['id'], self.weibo[0]['created_at'], error_since_weibo_id, start_time, self.user['id']))
+            else:
+                # 更新用户昵称头像信息
+                cursor.execute("UPDATE weibo_user_info SET NICK_NAME = '%s', AVATAR_URL = '%s' WHERE USER_ID = '%s'"
+                               % (self.user['screen_name'], self.user['avatar_hd'], self.user['id']))
+            connection.commit()
+        except Exception as e:
+            connection.rollback()
+            # print('Error: ', e)
+            # traceback.print_exc()
+            raise e
+        finally:
+            connection.close()
 
     def get_pages(self, db_user_info):
         """获取全部微博"""
@@ -738,7 +793,7 @@ class Weibo(object):
         # 若查询微博用户信息失败，在库中标记用户状态
         if not user_info:
             print '用户'+self.user_id+'状态异常！'
-            cursor.execute(
+            self.mysql_insert_sql(
                 "UPDATE weibo_user_info SET BAN = '1' WHERE USER_ID = '%s'"
                 % self.user_id)
             return
@@ -804,11 +859,11 @@ class Weibo(object):
                 progress_bar.update(page)
                 page = page + 1
 
-        if len(self.weibo) > 0:
-            # 更新用户信息
-            cursor.execute("UPDATE weibo_user_info SET NICK_NAME = '%s', AVATAR_URL = '%s', LATEST_WEIBO_ID = '%s', LATEST_WEIBO_TIME = '%s', ERROR_SINCE_WEIBO_ID = %s, UPDATE_TIME = '%s' WHERE USER_ID = '%s'"
-                           % (self.user['screen_name'], self.user['avatar_hd'], self.weibo[0]['id'], self.weibo[0]['created_at'], error_since_weibo_id, start_time, self.user['id']))
         self.write_data(wrote_count)  # 将剩余不足20页的微博写入文件
+
+        # 当前爬取的微博一次性插入mysql，该方法事务一致
+        self.write_db(error_since_weibo_id, start_time)
+
         print(u'微博爬取完成，共爬取%d条微博' % self.got_count)
 
     def get_user_list(self, file_name):
@@ -906,31 +961,31 @@ def main():
         user_id_list = wb.get_user_list('user_id_list.txt')"""
         user_id_list = []
 
-        n = cursor.execute(
+        all = wb.mysql_select(
             "SELECT USER_ID, NICK_NAME, LATEST_WEIBO_ID, LATEST_WEIBO_TIME, ERROR_SINCE_WEIBO_ID, UPDATE_TIME from weibo_user_info WHERE FLAG = '1' AND `STATUS` = '1' AND BAN = '1'")
-        if n:
+        if all.__len__():
             print '有如下微博状态异常'
-            for row in cursor.fetchall():
+            for row in all:
                 print 'id:' + row[0] + ', name:' + row[1]
             conn.close()
             return
 
-        n = cursor.execute("SELECT USER_ID, NICK_NAME, LATEST_WEIBO_ID, LATEST_WEIBO_TIME, ERROR_SINCE_WEIBO_ID, UPDATE_TIME from weibo_user_info WHERE FLAG = '1' AND `STATUS` = '1'")
-        print u'共需要爬' + str(n) + u'个微博'
-        for row in cursor.fetchall():
+        all = wb.mysql_select("SELECT USER_ID, NICK_NAME, LATEST_WEIBO_ID, LATEST_WEIBO_TIME, ERROR_SINCE_WEIBO_ID, UPDATE_TIME from weibo_user_info WHERE FLAG = '1' AND `STATUS` = '1'")
+        print u'共需要爬' + str(all.__len__()) + u'个微博'
+        for row in all:
             db_user_info = {'user_id': row[0], 'latest_weibo_id': row[2], 'latest_weibo_time': row[3], 'error_since_weibo_id': row[4], 'update_time': row[5]}
             print row
             user_id_list.append(db_user_info)
         wb.printHrLine()
 
         wb.start(user_id_list)
-        conn.commit()
-        conn.close()
+        # conn.commit()
+        # conn.close()
     except Exception as e:
         print('Error: ', e)
         traceback.print_exc()
-        conn.rollback()
-        conn.close()
+        # conn.rollback()
+        # conn.close()
 
 
 if __name__ == '__main__':
