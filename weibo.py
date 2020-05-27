@@ -967,7 +967,7 @@ def main():
             print '有如下微博状态异常'
             for row in all:
                 print 'id:' + row[0] + ', name:' + row[1]
-            conn.close()
+            # conn.close()
             return
 
         all = wb.mysql_select("SELECT USER_ID, NICK_NAME, LATEST_WEIBO_ID, LATEST_WEIBO_TIME, ERROR_SINCE_WEIBO_ID, UPDATE_TIME from weibo_user_info WHERE FLAG = '1' AND `STATUS` = '1'")
