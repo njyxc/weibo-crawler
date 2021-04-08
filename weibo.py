@@ -22,6 +22,12 @@ from tqdm import tqdm
 import pymysql
 import ConfigParser
 
+""" 微博api取到的时间格式 """
+WEB_API_DATE_FORMAT = "%a %b %d %H:%M:%S +0800 %Y"
+
+""" 数据库的时间格式 """
+DB_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
 """读取配置文件"""
 config_raw = ConfigParser.RawConfigParser()
 config_raw.read('./weibo-crawler.conf')
@@ -278,6 +284,8 @@ class Weibo(object):
         elif created_at.count('-') == 1:
             year = datetime.now().strftime("%Y")
             created_at = year + "-" + created_at
+        elif created_at.count('+') == 1:
+            created_at = datetime.strptime(created_at, (WEB_API_DATE_FORMAT)).strftime((DB_DATE_FORMAT))
         return created_at
 
     def standardize_info(self, weibo):
@@ -433,7 +441,7 @@ class Weibo(object):
                                 """ 最后一次爬取时间，在最新一条微博发布时间之后，则不存在新微博，结束爬取 """
                                 if db_update_time is not None:
                                     update_time_zero = db_update_time.replace(hour=0, minute=0, second=0)
-                                    weibo_created_at = datetime.strptime(wb['created_at'], "%Y-%m-%d")
+                                    weibo_created_at = datetime.strptime(wb['created_at'], DB_DATE_FORMAT).replace(hour=0, minute=0, second=0)
                                     if update_time_zero > weibo_created_at:
                                         if self.is_pin(w):
                                             continue
@@ -444,14 +452,14 @@ class Weibo(object):
                                                 return result
                                 """ 数据库里的最后一条微博时间，在最新一条微博发布时间之后，则不存在新微博，结束爬取 """
                                 if db_latest_weibo_time is not None:
-                                    if db_latest_weibo_time > datetime.strptime(wb['created_at'], "%Y-%m-%d"):
+                                    if db_latest_weibo_time > datetime.strptime(wb['created_at'], DB_DATE_FORMAT):
                                         if self.is_pin(w):
                                             continue
                                         else:
                                             result['code'] = 0
                                             return result
                             created_at = datetime.strptime(
-                                wb['created_at'], "%Y-%m-%d")
+                                wb['created_at'], DB_DATE_FORMAT)
                             since_date = datetime.strptime(
                                 self.since_date, "%Y-%m-%d")
                             if created_at < since_date:
@@ -732,7 +740,7 @@ class Weibo(object):
         finally:
             connection.close()
 
-    def write_db(self, error_since_weibo_id, start_time):
+    def write_db(self, error_since_weibo_id, start_time, recovery):
         """将爬到的信息写入csv文件"""
         connection = pymysql.connect(host=dbinfo_host, user=dbinfo_user, passwd=dbinfo_password, db=dbinfo_db)
         cursor = connection.cursor()
@@ -772,12 +780,19 @@ class Weibo(object):
                         cursor.execute(sql)
             if len(self.weibo) > 0:
                 # 更新用户信息
-                cursor.execute("UPDATE weibo_user_info SET NICK_NAME = '%s', AVATAR_URL = '%s', LATEST_WEIBO_ID = '%s', LATEST_WEIBO_TIME = '%s', ERROR_SINCE_WEIBO_ID = %s, UPDATE_TIME = '%s' WHERE USER_ID = '%s'"
-                               % (self.user['screen_name'], self.user['avatar_hd'], self.weibo[0]['id'], self.weibo[0]['created_at'], error_since_weibo_id, start_time, self.user['id']))
+                if recovery:
+                    cursor.execute("UPDATE weibo_user_info SET NICK_NAME = '%s', AVATAR_URL = '%s', ERROR_SINCE_WEIBO_ID = %s WHERE USER_ID = '%s'"
+                                 % (self.user['screen_name'], self.user['avatar_hd'], error_since_weibo_id, self.user['id']))
+                else:
+                    cursor.execute("UPDATE weibo_user_info SET NICK_NAME = '%s', AVATAR_URL = '%s', LATEST_WEIBO_ID = '%s', LATEST_WEIBO_TIME = '%s', ERROR_SINCE_WEIBO_ID = %s, UPDATE_TIME = '%s' WHERE USER_ID = '%s'"
+                                 % (self.user['screen_name'], self.user['avatar_hd'], self.weibo[0]['id'], self.weibo[0]['created_at'], error_since_weibo_id, start_time, self.user['id']))
             else:
                 # 更新用户昵称头像信息
                 cursor.execute("UPDATE weibo_user_info SET NICK_NAME = '%s', AVATAR_URL = '%s' WHERE USER_ID = '%s'"
                                % (self.user['screen_name'], self.user['avatar_hd'], self.user['id']))
+                # cursor.execute(
+                #     "UPDATE weibo_user_info SET NICK_NAME = '%s', AVATAR_URL = '%s', ERROR_SINCE_WEIBO_ID = %s WHERE USER_ID = '%s'"
+                #     % (self.user['screen_name'], self.user['avatar_hd'], error_since_weibo_id, self.user['id']))
             connection.commit()
         except Exception as e:
             connection.rollback()
@@ -838,6 +853,7 @@ class Weibo(object):
                         break
                 # 没有微博需要爬
                 elif result_code == 0:
+                    error_since_weibo_id = 'null'
                     break
                 # 爬取微博出错，记录错误位置，下次爬取时，从该位置重试
                 elif result_code == 2:
@@ -852,7 +868,7 @@ class Weibo(object):
                 # 制会自动解除)，加入随机等待模拟人的操作，可降低被系统限制的风险。默
                 # 认是每爬取1到5页随机等待6到10秒，如果仍然被限，可适当增加sleep时间
                 if page - page1 == random_pages and page < page_count:
-                    sleep(random.randint(8, 15))
+                    sleep(random.randint(10, 15))
                     page1 = page
                     random_pages = random.randint(1, 5)
 
@@ -862,7 +878,7 @@ class Weibo(object):
         self.write_data(wrote_count)  # 将剩余不足20页的微博写入文件
 
         # 当前爬取的微博一次性插入mysql，该方法事务一致
-        self.write_db(error_since_weibo_id, start_time)
+        self.write_db(error_since_weibo_id, start_time, recovery)
 
         print(u'微博爬取完成，共爬取%d条微博' % self.got_count)
 
