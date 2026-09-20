@@ -1126,8 +1126,6 @@ def main():
             # conn.close()
             return
 
-        all = wb.mysql_select("SELECT USER_ID, NICK_NAME, LATEST_WEIBO_ID, LATEST_WEIBO_TIME, ERROR_SINCE_WEIBO_ID, UPDATE_TIME from weibo_user_info WHERE FLAG = '1' AND `STATUS` = '1'")
-        print u'共需要爬' + str(all.__len__()) + u'个微博'
         query_user_sql = "SELECT USER_ID, NICK_NAME, AVATAR_URL, LATEST_WEIBO_ID, LATEST_WEIBO_TIME, ERROR_SINCE_WEIBO_ID, UPDATE_TIME from weibo_user_info WHERE FLAG = '1' AND `STATUS` = '1'"
         all = wb.mysql_select(query_user_sql)
         print(u'共需要爬' + str(all.__len__()) + u'个微博')
